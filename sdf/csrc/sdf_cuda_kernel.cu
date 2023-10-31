@@ -241,40 +241,36 @@ static __inline__ __device__ scalar_t point_triangle_distance(const scalar_t* x0
 }
 
 
-
-
 template<typename scalar_t>
 __global__ void sdf_cuda_kernel(
         scalar_t* phi,
         const long* faces,
         const scalar_t* vertices,
         const scalar_t* query,
-        int batch_size,
         int num_faces,
         int num_vertices,
         int grid_size) {
 
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= batch_size * grid_size) {
+    if (tid >= grid_size) {
         return;
     }
     const int i = tid % grid_size;
-    const int bn = tid / (grid_size);
-    const scalar_t center_x = query[bn*grid_size*3 + i*3];
-    const scalar_t center_y = query[bn*grid_size*3 + i*3+1];
-    const scalar_t center_z = query[bn*grid_size*3 + i*3+2];
+    const scalar_t center_x = query[i*3];
+    const scalar_t center_y = query[i*3+1];
+    const scalar_t center_z = query[i*3+2];
 
     const scalar_t center[3] = {center_x, center_y, center_z};
     int num_intersect = 0;
     scalar_t min_distance=999999;
     for (int f = 0; f < num_faces; ++f) {
-        const long* face = &faces[bn*num_faces + 3*f];
+        const long* face = &faces[3*f];
         const int v1i = face[0];
         const int v2i = face[1];
         const int v3i = face[2];
-        const scalar_t* v1 = &vertices[bn*num_vertices*3 + v1i*3];
-        const scalar_t* v2 = &vertices[bn*num_vertices*3 + v2i*3];
-        const scalar_t* v3 = &vertices[bn*num_vertices*3 + v3i*3];
+        const scalar_t* v1 = &vertices[v1i*3];
+        const scalar_t* v2 = &vertices[v2i*3];
+        const scalar_t* v3 = &vertices[v3i*3];
         scalar_t closest_point[3];
         point_triangle_distance(center, v1, v2, v3, closest_point);
         scalar_t distance = dist(center, closest_point);
@@ -285,13 +281,13 @@ __global__ void sdf_cuda_kernel(
 
         if (distance < min_distance) {
             min_distance = distance;
-            phi[bn*grid_size*4 + i*4] = closest_point[0];
-            phi[bn*grid_size*4 + i*4+1] = closest_point[1];
-            phi[bn*grid_size*4 + i*4+2] = closest_point[2];
+            phi[i*4] = closest_point[0];
+            phi[i*4+1] = closest_point[1];
+            phi[i*4+2] = closest_point[2];
         }
 
         if (intersect) {
-            phi[bn*grid_size*4 + i*4+3] = intersect;
+            phi[i*4+3] = intersect;
             num_intersect++;
         }
     }
@@ -323,12 +319,11 @@ at::Tensor sdf_cuda(
         at::Tensor vertices,
         at::Tensor queries) {
 
-    const auto batch_size = phi.size(0);
-    const auto grid_size = phi.size(1);
-    const auto num_faces = faces.size(1);
-    const auto num_vertices = vertices.size(1);
+    const auto grid_size = phi.size(0);
+    const auto num_faces = faces.size(0);
+    const auto num_vertices = vertices.size(0);
     const int threads = 512;
-    const dim3 blocks ((batch_size * grid_size) / threads + 1);
+    const dim3 blocks (grid_size / threads + 1);
 
     AT_DISPATCH_FLOATING_TYPES(phi.type(), "sdf_cuda", ([&] {
       sdf_cuda_kernel<scalar_t><<<blocks, threads>>>(
@@ -336,7 +331,6 @@ at::Tensor sdf_cuda(
           faces.data<long>(),
           vertices.data<scalar_t>(),
           queries.data<scalar_t>(),
-          batch_size,
           num_faces,
           num_vertices,
           grid_size);

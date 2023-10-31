@@ -24,6 +24,6 @@ class SDF(nn.Module):
         """
         phi: Batch x nV x 4 (nearest points + inside or outside)
         """
-        phi = torch.zeros((query.shape[0], query.shape[1], query.shape[2]+1), device=vertices.device).float()
+        phi = torch.zeros((query.shape[0], query.shape[1]+1), device=vertices.device).float()
         phi = SDFFunction.apply(phi, faces, vertices, query)
         return phi
