@@ -1,2 +1,2 @@
-from .sdf import SDF, SDF2
+from .sdf import SDF
 from .sdf_loss import SDFLoss

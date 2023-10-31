@@ -22,7 +22,6 @@ at::Tensor sdf(
 	CHECK_INPUT(faces);
 	CHECK_INPUT(vertices);
         CHECK_INPUT(query);
-
 	return sdf_cuda(phi, faces, vertices, query);
 };
 

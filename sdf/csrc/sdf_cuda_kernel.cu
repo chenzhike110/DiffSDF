@@ -133,6 +133,7 @@ static __inline__ __device__ int intersect_triangle(
     
     /* calculate t, ray intersects triangle */
     *t = DOT(edge2, qvec) * inv_det;
+    // printf("%f",*t);
     
     return 1;
 }
@@ -146,7 +147,10 @@ static __inline__ __device__ int triangle_ray_intersection(const scalar_t* origi
     // t is the distance, u and v are barycentric coordinates
     // http://fileadmin.cs.lth.se/cs/personal/tomas_akenine-moller/code/raytri_tam.pdf
     scalar_t u, v;
-    return intersect_triangle(origin, _dir, v1, v2, v3, t, &u, &v);
+    bool intersect = intersect_triangle(origin, _dir, v1, v2, v3, t, &u, &v);
+    if (*t > 0 && *t < 1 && intersect)
+        return 1;
+    return 0;
 }
 
 
@@ -242,7 +246,7 @@ static __inline__ __device__ scalar_t point_triangle_distance(const scalar_t* x0
 template<typename scalar_t>
 __global__ void sdf_cuda_kernel(
         scalar_t* phi,
-        const int32_t* faces,
+        const long* faces,
         const scalar_t* vertices,
         const scalar_t* query,
         int batch_size,
@@ -251,23 +255,20 @@ __global__ void sdf_cuda_kernel(
         int grid_size) {
 
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= batch_size * grid_size * grid_size * grid_size) {
+    if (tid >= batch_size * grid_size) {
         return;
     }
     const int i = tid % grid_size;
-    const int j = (tid / grid_size) % grid_size;
-    const int k = (tid / (grid_size*grid_size)) % grid_size;
-    const int bn = tid / (grid_size*grid_size*grid_size);
-    const scalar_t dx = 2./(grid_size-1);
-    const scalar_t center_x = -1 + (i + 0.5) * dx;
-    const scalar_t center_y = -1 + (j + 0.5) * dx;
-    const scalar_t center_z = -1 + (k + 0.5) * dx;
+    const int bn = tid / (grid_size);
+    const scalar_t center_x = query[bn*grid_size*3 + i*3];
+    const scalar_t center_y = query[bn*grid_size*3 + i*3+1];
+    const scalar_t center_z = query[bn*grid_size*3 + i*3+2];
 
     const scalar_t center[3] = {center_x, center_y, center_z};
     int num_intersect = 0;
-    scalar_t min_distance=1000;
+    scalar_t min_distance=999999;
     for (int f = 0; f < num_faces; ++f) {
-        const int32_t* face = &faces[3*f];
+        const long* face = &faces[bn*num_faces + 3*f];
         const int v1i = face[0];
         const int v2i = face[1];
         const int v3i = face[2];
@@ -278,20 +279,26 @@ __global__ void sdf_cuda_kernel(
         point_triangle_distance(center, v1, v2, v3, closest_point);
         scalar_t distance = dist(center, closest_point);
 
+        scalar_t origin[3] = {0., 0., 0.};
+        scalar_t me2origin = dist(center, origin);
+        bool intersect = triangle_ray_intersection(center, origin, v1, v2, v3, &me2origin);
+
         if (distance < min_distance) {
             min_distance = distance;
+            phi[bn*grid_size*4 + i*4] = closest_point[0];
+            phi[bn*grid_size*4 + i*4+1] = closest_point[1];
+            phi[bn*grid_size*4 + i*4+2] = closest_point[2];
         }
 
-        scalar_t origin[3] = {-1.0, -1.0, -1.0};
-        bool intersect = triangle_ray_intersection(center, origin, v1, v2, v3, &distance);
-
-        if (intersect && distance >= 0) {
+        if (intersect) {
+            phi[bn*grid_size*4 + i*4+3] = intersect;
             num_intersect++;
         }
     }
-    if (num_intersect % 2 == 0) {
-        min_distance = 0.;
-    }
+    // printf("intersection: %d", num_intersect);
+    // if (num_intersect % 2 == 0) {
+    //     min_distance = 0.;
+    // }
     // if (num_intersect % 2 != 0) {
     //     min_distance = 0.;
     // }
@@ -303,8 +310,6 @@ __global__ void sdf_cuda_kernel(
     // }
     // phi[tid] = (scalar_t) num_intersect;
     // phi[bn*grid_size*grid_size*grid_size + k*grid_size*grid_size + j*grid_size + i] = min_distance;
-    phi[tid] = min_distance;
-
     // if (num_intersect % 2 == 0) {
     //     phi[tid] = 0;
     // }
@@ -316,22 +321,21 @@ at::Tensor sdf_cuda(
         at::Tensor phi,
         at::Tensor faces,
         at::Tensor vertices,
-        at::Tensor query) {
+        at::Tensor queries) {
 
     const auto batch_size = phi.size(0);
     const auto grid_size = phi.size(1);
-    const auto num_faces = faces.size(0);
+    const auto num_faces = faces.size(1);
     const auto num_vertices = vertices.size(1);
     const int threads = 512;
-    const dim3 blocks ((batch_size * grid_size) / threads);
-
+    const dim3 blocks ((batch_size * grid_size) / threads + 1);
 
     AT_DISPATCH_FLOATING_TYPES(phi.type(), "sdf_cuda", ([&] {
       sdf_cuda_kernel<scalar_t><<<blocks, threads>>>(
           phi.data<scalar_t>(),
-          faces.data<int32_t>(),
+          faces.data<long>(),
           vertices.data<scalar_t>(),
-          query.data<scalar_t>(),
+          queries.data<scalar_t>(),
           batch_size,
           num_faces,
           num_vertices,
