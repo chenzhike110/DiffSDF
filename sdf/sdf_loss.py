@@ -1,7 +1,6 @@
 import torch
 import trimesh
 import torch.nn as nn
-import numpy as np
 
 from sdf import SDF
 
@@ -11,8 +10,8 @@ class SDFLoss(nn.Module):
         super(SDFLoss, self).__init__()
         self.sdf = SDF()
 
-    def forward(self, points, queries):
-        mesh = trimesh.points.PointCloud(vertices=points.cpu().numpy())
+    def forward(self, points, queries, normalized=True):
+        mesh = trimesh.points.PointCloud(vertices=points.detach().cpu().numpy())
         mesh = mesh.convex_hull
         faces = torch.tensor(mesh.faces).to(points.device)
         verts = torch.tensor(mesh.vertices).float().to(points.device)
@@ -25,23 +24,27 @@ class SDFLoss(nn.Module):
         verts = (verts - center) / scale
         queries = (queries - center) / scale
 
-        phi = self.sdf(faces, verts, queries)
+        with torch.no_grad():
+            phi = self.sdf(faces, verts, queries)
 
-        phi[:, :-1] = phi[:, :-1] *  scale + center
-        queries = queries * scale + center
+        if not normalized:
+            closest = phi[:, :-1] *  scale + center
+            queries = queries * scale + center
+        else:
+            closest = phi[:, :-1]
         
-        distance = torch.norm(queries - phi[ :, :-1], dim=-1)
+        distance = torch.norm(queries - closest, dim=-1)
 
         #debug
-        scene = trimesh.Scene()
-        mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, face_colors = np.ones((mesh.faces.shape[0], 4)) * 100.)
-        p = trimesh.points.PointCloud(vertices=queries.cpu().numpy())
-        lines_faces = np.concatenate((queries.cpu().numpy(), phi[:, :-1].cpu().numpy()), axis=1).reshape(queries.shape[0],2,3)
-        lines_faces = trimesh.load_path(lines_faces)
-        scene.add_geometry(mesh)
-        scene.add_geometry(p)
-        scene.add_geometry(lines_faces)
-        scene.show()
+        # scene = trimesh.Scene()
+        # mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, face_colors = np.ones((mesh.faces.shape[0], 4)) * 100.)
+        # p = trimesh.points.PointCloud(vertices=queries.cpu().numpy())
+        # lines_faces = np.concatenate((queries.cpu().numpy(), phi[:, :-1].cpu().numpy()), axis=1).reshape(queries.shape[0],2,3)
+        # lines_faces = trimesh.load_path(lines_faces)
+        # scene.add_geometry(mesh)
+        # scene.add_geometry(p)
+        # scene.add_geometry(lines_faces)
+        # scene.show()
 
         inside = (phi[:, -1] < 1).nonzero()
         distance[inside] *= -1
